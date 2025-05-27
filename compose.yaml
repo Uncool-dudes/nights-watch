@@ -1,0 +1,7 @@
+version: '3'
+services:
+  nights-watch:
+    image: chess-analysis
+    container_name: nights-watch
+    ports:
+      - "3000:3000"
