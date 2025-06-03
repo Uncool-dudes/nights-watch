@@ -6,6 +6,15 @@ import { cors } from 'hono/cors';
 import { access } from 'fs/promises';
 import { constants } from 'fs';
 
+interface Move {
+  position: string,
+  move: string
+}
+
+export interface EvaluatedMove extends Move {
+  evaluation: string,
+  bestMove: string
+}
 
 const app = new Hono();
 app.use('*', cors({ origin: '*' }));
@@ -48,18 +57,20 @@ function createStockfish() {
 }
 
 app.post('/eval', async (c) => {
-  const body = await c.req.json();
-  const fens: string[] = body.fens;
-  const depth: string = body.depth || '15';
-  if (!Array.isArray(fens) || fens.length === 0) {
+  const { moves, depth } = await c.req.json() as { moves: Move[], depth?: string };
+
+
+  if (!Array.isArray(moves) || moves.length === 0) {
     return c.text('Invalid or empty FEN array', 400);
   }
-  const evaluations = await Promise.all(
-    fens.map((fen) => {
+
+  const evaluatedMoves: EvaluatedMove[] = await Promise.all(
+    moves.map((move) => {
       return new Promise((resolve) => {
         const stockfish = createStockfish();
         let lastEval = '';
-        let bestmove = '';
+        let bestMove = '';
+
         stockfish.onOutput((line) => {
           if (line.includes('score')) {
             lastEval = line.trim();
@@ -67,7 +78,7 @@ app.post('/eval', async (c) => {
           if (line.includes('bestmove')) {
             const bestMoveMatch = line.match(/bestmove (\S+)/);
             if (bestMoveMatch) {
-              bestmove = bestMoveMatch[1];
+              bestMove = bestMoveMatch[1];
             }
             const scoreMatch = lastEval.match(/score (cp|mate) (-?\d+)/);
             let evaluation = null;
@@ -76,16 +87,21 @@ app.post('/eval', async (c) => {
               evaluation = type === 'cp' ? parseInt(value, 10) / 100 : `mate in ${value}`;
             }
             stockfish.terminate();
-            resolve({ fen, evaluation, bestmove });
+            resolve({
+              ...move,
+              evaluation: evaluation,
+              bestMove: bestMove
+            } as EvaluatedMove);
           }
-        });
+        })
         stockfish.send('uci');
-        stockfish.send(`position fen ${fen}`);
+        stockfish.send('setoption name Threads value 4');
+        stockfish.send(`position fen ${move.position}`);
         stockfish.send(`go depth ${depth}`);
-      });
+      }) as Promise<EvaluatedMove>;
     })
   );
-  return c.json({ evaluations });
+  return c.json({ evaluatedMoves });
 });
 
 
@@ -146,7 +162,7 @@ app.get('/', async (c) => {
 });
 
 
-const port = process.env.PORT || 3000;
+const port = parseInt(process.env.PORT!) | 3000;
 serve({ fetch: app.fetch, port: Number(port) });
 console.log(`🚀 Hono server running at http: ${port}`);
 export default app;
