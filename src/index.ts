@@ -8,11 +8,10 @@ import { constants } from 'fs';
 
 interface Move {
   position: string,
-  move: string
 }
 
 export interface EvaluatedMove extends Move {
-  evaluation: string,
+  evaluation: string | number,
   bestMove: string
 }
 
@@ -171,22 +170,23 @@ process.on('SIGINT', () => {
   stockfishPool.terminate();
 });
 
-app.post('/eval', async (c) => {
-  const { moves, depth = '15' } = await c.req.json() as { moves: Move[], depth?: string };
 
-  if (!Array.isArray(moves) || moves.length === 0) {
-    return c.text('Invalid or empty moves array', 400);
+app.post('/eval', async (c) => {
+  console.log("Called")
+  const { fens, depth = '15' } = await c.req.json() as { fens: string[], depth?: string };
+
+  if (!Array.isArray(fens) || fens.length === 0) {
+    return c.text('Invalid or empty FEN array', 400);
   }
 
-  // Process moves in batches to avoid overwhelming the system
-  const batchSize = 4; // Match pool size
+  const batchSize = 4;
   const evaluatedMoves: EvaluatedMove[] = [];
 
-  for (let i = 0; i < moves.length; i += batchSize) {
-    const batch = moves.slice(i, i + batchSize);
+  for (let i = 0; i < fens.length; i += batchSize) {
+    const batch = fens.slice(i, i + batchSize);
 
     const batchResults = await Promise.all(
-      batch.map(async (move) => {
+      batch.map(async (fen) => {
         const stockfish = await stockfishPool.acquire();
 
         return new Promise<EvaluatedMove>((resolve) => {
@@ -213,37 +213,35 @@ app.post('/eval', async (c) => {
               }
 
               const scoreMatch = lastEval.match(/score (cp|mate) (-?\d+)/);
-              let evaluation = null;
+              let evaluation: string | number = 'N/A';
 
               if (scoreMatch) {
                 const [_, type, value] = scoreMatch;
-                evaluation = type === 'cp' ? parseInt(value, 10) / 100 : `mate in ${value}`;
+                evaluation = type === 'cp' ? parseInt(value) / 100 : `mate in ${value}`;
               }
 
               cleanup();
               resolve({
-                ...move,
-                evaluation: evaluation,
-                bestMove: bestMove
-              } as EvaluatedMove);
+                position: fen,
+                evaluation,
+                bestMove
+              });
             }
           };
 
           stockfish.engine.stdout.on('data', outputHandler);
 
-          // Set position and analyze
-          stockfish.send(`position fen ${move.position}`);
+          stockfish.send(`position fen ${fen}`);
           stockfish.send(`go depth ${depth}`);
 
-          // Timeout safety
           setTimeout(() => {
             cleanup();
             resolve({
-              ...move,
-              evaluation: "fucked",
+              position: fen,
+              evaluation: 'timeout',
               bestMove: ''
-            } as EvaluatedMove);
-          }, 30000); // 30 second timeout
+            });
+          }, 30000);
         });
       })
     );
@@ -253,91 +251,6 @@ app.post('/eval', async (c) => {
 
   return c.json({ evaluatedMoves });
 });
-// function createStockfish() {
-//   const engine = spawn('/app/stockfish/stockfish-ubuntu-x86-64-avx2');
-//
-//   let alive = true;
-//
-//   engine.on('error', (err) => {
-//     console.error('Stockfish process error:', err);
-//     alive = false;
-//   });
-//
-//   engine.on('exit', (code, signal) => {
-//     console.log(`Stockfish process exited with code ${code} signal ${signal}`);
-//     alive = false;
-//   });
-//
-//   return {
-//     send: (cmd: string) => {
-//       if (!alive) {
-//         console.warn('Attempted to send command to closed Stockfish process');
-//         return;
-//       }
-//       engine.stdin.write(cmd + '\n');
-//     },
-//     onOutput: (callback: (output: string) => void) => {
-//       engine.stdout.on('data', (data) => {
-//         callback(data.toString());
-//       });
-//     },
-//     terminate: () => {
-//       alive = false;
-//       engine.stdin.end();
-//       engine.kill();
-//     }
-//   };
-// }
-//
-// app.post('/eval', async (c) => {
-//   const { moves, depth } = await c.req.json() as { moves: Move[], depth?: string };
-//
-//
-//   if (!Array.isArray(moves) || moves.length === 0) {
-//     return c.text('Invalid or empty FEN array', 400);
-//   }
-//
-//   const evaluatedMoves: EvaluatedMove[] = await Promise.all(
-//     moves.map((move) => {
-//       return new Promise((resolve) => {
-//         const stockfish = createStockfish();
-//         let lastEval = '';
-//         let bestMove = '';
-//
-//         stockfish.onOutput((line) => {
-//           if (line.includes('score')) {
-//             lastEval = line.trim();
-//           }
-//           if (line.includes('bestmove')) {
-//             const bestMoveMatch = line.match(/bestmove (\S+)/);
-//             if (bestMoveMatch) {
-//               bestMove = bestMoveMatch[1];
-//             }
-//             const scoreMatch = lastEval.match(/score (cp|mate) (-?\d+)/);
-//             let evaluation = null;
-//             if (scoreMatch) {
-//               const [_, type, value] = scoreMatch;
-//               evaluation = type === 'cp' ? parseInt(value, 10) / 100 : `mate in ${value}`;
-//             }
-//             stockfish.terminate();
-//             resolve({
-//               ...move,
-//               evaluation: evaluation,
-//               bestMove: bestMove
-//             } as EvaluatedMove);
-//           }
-//         })
-//         stockfish.send('uci');
-//         stockfish.send('setoption name Threads value 4');
-//         stockfish.send(`position fen ${move.position}`);
-//         stockfish.send(`go depth ${depth}`);
-//       }) as Promise<EvaluatedMove>;
-//     })
-//   );
-//   return c.json({ evaluatedMoves });
-// });
-//
-
 
 async function checkStockfishRunnable(path = '/app/stockfish/stockfish-ubuntu-x86-64-avx2'): Promise<boolean> {
   return new Promise((resolve) => {
